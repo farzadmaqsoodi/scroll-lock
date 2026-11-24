@@ -1,5 +1,4 @@
-
-name: Build ScrollLock APK
+name: Build ScrollLock Release APK
 
 on:
   workflow_dispatch:
@@ -14,10 +13,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout source
+      - name: Check out source
         uses: actions/checkout@v4
 
-      - name: Set up JDK
+      - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -27,17 +26,51 @@ jobs:
         uses: android-actions/setup-android@v4
         with:
           packages: 'platform-tools'
-      - name: Install SDK
+
+      - name: Install Android SDK packages
         run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
 
-      - name: Build APK
+      - name: Set up release signing
+        env:
+          SIGNING_KEY_BASE64: ${{ secrets.SIGNING_KEY_BASE64 }}
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          test -n "$SIGNING_KEY_BASE64" || { echo "Missing SIGNING_KEY_BASE64 secret"; exit 1; }
+          test -n "$SIGNING_STORE_PASSWORD" || { echo "Missing SIGNING_STORE_PASSWORD secret"; exit 1; }
+          test -n "$SIGNING_KEY_PASSWORD" || { echo "Missing SIGNING_KEY_PASSWORD secret"; exit 1; }
+
+          printf '%s' "$SIGNING_KEY_BASE64" | base64 --decode > scrolllock-release.jks
+          test -s scrolllock-release.jks
+
+          {
+            printf 'storeFile=scrolllock-release.jks\n'
+            printf 'storePassword=%s\n' "$SIGNING_STORE_PASSWORD"
+            printf 'keyAlias=scrolllock\n'
+            printf 'keyPassword=%s\n' "$SIGNING_KEY_PASSWORD"
+          } > keystore.properties
+
+      - name: Build signed release APK
         run: |
           chmod +x bootstrap-gradle.sh
           ./bootstrap-gradle.sh
-          ./gradlew assembleDebug
+          ./gradlew --no-daemon assembleRelease
 
-      - name: Upload APK
+      - name: Verify APK signature and create checksum
+        run: |
+          APK="app/build/outputs/apk/release/app-release.apk"
+          test -s "$APK"
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$APK"
+          sha256sum "$APK" > "$APK.sha256"
+
+      - name: Upload signed release APK
         uses: actions/upload-artifact@v4
         with:
-          name: ScrollLock-APK
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: ScrollLock-signed-release
+          path: |
+            app/build/outputs/apk/release/app-release.apk
+            app/build/outputs/apk/release/app-release.apk.sha256
+          if-no-files-found: error
+          retention-days: 30
